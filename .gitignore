@@ -26,3 +26,8 @@ build/
 # Article tracker outputs
 article-list-tracker/article_lists.txt
 article-list-tracker/failed_url_list.txt
+
+# Article reader outputs
+article-reader/outputs/
+article-reader/read_articles.json
+article-reader/scripts/serve.py
