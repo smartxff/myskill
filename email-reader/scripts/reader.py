@@ -178,7 +178,7 @@ def get_email_detail(email_id=None, message_id=None):
                 "to": to_addr,
                 "subject": subject,
                 "date": msg['Date'],
-                "body": body[:5000],
+                "body": body,
                 "attachments": attachments
             }
             

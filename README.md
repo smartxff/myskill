@@ -9,6 +9,7 @@
 | translator | 翻译：英文 → 中文 | MiniMax M2.5 |
 | classifier | 分类：AI相关英文 / AI相关中文 / 其他 | MiniMax M2.5 |
 | email-reader | 读取 QQ 邮箱邮件 | QQ邮箱 IMAP/SMTP |
+| article-list-tracker | 从邮件中提取文章列表URL并去重 | MiniMax M2.5 |
 
 ## 快速开始
 
@@ -26,7 +27,8 @@ pip install -r skills/*/scripts/requirements.txt
 configs/
 ├── translator.json
 ├── classifier.json
-└── email-reader.json
+├── email-reader.json
+└── article-list-tracker.json
 ```
 
 #### 配置方法
@@ -41,6 +43,9 @@ cp skills/classifier/config/example.json configs/classifier.json
 
 # email-reader
 cp skills/email-reader/config/example.json configs/email-reader.json
+
+# article-list-tracker
+cp skills/article-list-tracker/config/example.json configs/article-list-tracker.json
 ```
 
 2. 编辑 `configs/` 下的配置文件，填入真实配置
@@ -48,17 +53,11 @@ cp skills/email-reader/config/example.json configs/email-reader.json
 ### 3. 使用
 
 ```bash
-# 翻译
-python skills/translator/scripts/translate.py --text "Hello"
-
-# 分类
-python skills/classifier/scripts/classify.py --text "AI content"
-
-# 读取邮件列表
-python skills/email-reader/scripts/reader.py list --limit 10
-
 # 读取邮件详情
 python skills/email-reader/scripts/reader.py read --latest
+
+# 文章列表追踪（从邮件中提取文章列表URL）
+python skills/article-list-tracker/scripts/track.py --stdin
 ```
 
 ## 项目结构
@@ -71,7 +70,8 @@ myskills/
 ├── configs/                    # 真实配置（git ignore）
 │   ├── translator.json
 │   ├── classifier.json
-│   └── email-reader.json
+│   ├── email-reader.json
+│   └── article-list-tracker.json
 └── skills/                     # Skills 代码
     ├── translator/
     │   ├── SKILL.md
@@ -85,10 +85,15 @@ myskills/
     │   ├── config/
     │   │   └── example.json
     │   └── scripts/
-    └── email-reader/
+    ├── email-reader/
+    │   ├── SKILL.md
+    │   ├── README.md
+    │   ├── config/
+    │   │   └── example.json
+    │   └── scripts/
+    └── article-list-tracker/
         ├── SKILL.md
-        ├── README.md
-        ├──   └── example.json config/
-        │
+        ├── config/
+        │   └── example.json
         └── scripts/
 ```
