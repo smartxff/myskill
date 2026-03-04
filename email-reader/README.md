@@ -10,6 +10,8 @@ pip install -r scripts/requirements.txt
 
 ## 配置
 
+**邮箱**：QQ 邮箱
+
 1. 复制示例配置：
 ```bash
 cp config/example.json ../../configs/email-reader.json

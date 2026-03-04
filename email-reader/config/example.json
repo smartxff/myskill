@@ -1,1 +1,4 @@
-{"email": "your_email@qq.com", "password": "your_auth_code"}
+{
+  "email": "your_email@qq.com（QQ邮箱）",
+  "password": "your_auth_code（QQ邮箱授权码）"
+}

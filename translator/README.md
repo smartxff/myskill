@@ -17,6 +17,8 @@ pip install -r scripts/requirements.txt
 
 ## 配置
 
+**模型**：MiniMax M2.5
+
 1. 复制示例配置：
 ```bash
 cp config/example.json ../../configs/translator.json

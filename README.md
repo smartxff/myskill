@@ -4,11 +4,11 @@
 
 ## Skills 列表
 
-| Skill | 功能 |
-|-------|------|
-| translator | 翻译：英文 → 中文 |
-| classifier | 分类：AI相关英文 / AI相关中文 / 其他 |
-| email-reader | 读取 QQ 邮箱邮件 |
+| Skill | 功能 | 模型/服务 |
+|-------|------|----------|
+| translator | 翻译：英文 → 中文 | MiniMax M2.5 |
+| classifier | 分类：AI相关英文 / AI相关中文 / 其他 | MiniMax M2.5 |
+| email-reader | 读取 QQ 邮箱邮件 | QQ邮箱 IMAP/SMTP |
 
 ## 快速开始
 
