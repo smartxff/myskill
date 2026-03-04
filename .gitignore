@@ -22,3 +22,7 @@ Thumbs.db
 # Build
 dist/
 build/
+
+# Article tracker outputs
+article-list-tracker/article_lists.txt
+article-list-tracker/failed_url_list.txt

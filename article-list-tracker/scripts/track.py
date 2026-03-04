@@ -3,6 +3,7 @@ import argparse
 import json
 import re
 import sys
+import time
 import urllib.parse
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from bs4 import BeautifulSoup
 
 CONFIG_FILE = Path(__file__).resolve().parent.parent.parent / "configs" / "article-list-tracker.json"
 OUTPUT_FILE = Path("article_lists.txt")
+FAILED_URLS_FILE = Path("failed_url_list.txt")
 MINIMAX_API_URL = "https://api.minimax.chat/v1/text/chatcompletion_v2"
 
 def load_config():
@@ -52,6 +54,25 @@ def call_minimax(prompt: str, system_prompt: str = None, api_key: str = None) ->
         return result["choices"][0]["message"]["content"]
     except Exception as e:
         return f"Error: {str(e)}"
+
+def resolve_redirect_url(url: str, max_redirects: int = 5) -> str:
+    try:
+        for _ in range(max_redirects):
+            r = requests.head(url, allow_redirects=False, timeout=10)
+            if r.status_code in (301, 302, 303, 307, 308):
+                location = r.headers.get('Location')
+                if location:
+                    if location.startswith('http'):
+                        url = location
+                    else:
+                        url = urllib.parse.urljoin(url, location)
+                else:
+                    break
+            else:
+                break
+        return url
+    except Exception:
+        return url
 
 def extract_article_links_from_html(html_content: str) -> list:
     soup = BeautifulSoup(html_content, 'html.parser')
@@ -95,34 +116,77 @@ def extract_article_urls(mail_text: str, api_key: str) -> list:
     
     return urls
 
-def find_list_urls_batch(article_urls: list, api_key: str) -> list:
+def find_list_urls_batch(article_urls: list, api_key: str) -> dict:
     if not article_urls:
-        return []
+        return {}
     
     urls_text = "\n".join([f"{i+1}. {url}" for i, url in enumerate(article_urls)])
     
-    system_prompt = f"""你是一个URL分析助手。根据用户提供的多个文章URL，分析并找出每个文章所属的文章列表/分类页URL。
+    system_prompt = f"""你是一个URL分析助手。根据用户提供的多个文章URL，找出每个文章所属的**网站首页或分类列表页**URL。
 
 文章URL列表：
 {urls_text}
 
 要求：
-1. 对每个文章URL，分析其所属的列表/分类页URL
-2. 格式：每行一个结果，格式为 "原文章URL -> 列表URL"
-3. 如果某文章无法确定列表URL，格式为 "原文章URL -> NONE"
-4. 不要添加任何解释"""
-    
+1. 只返回网站的主页或分类列表页URL（如 /category/ai, /tag/tech, /blog, /news 等）
+2. 不要返回包含日期路径的URL（如 /2026/03/02, /2025/12/ 等）
+3. 不要返回文章详情页URL（如 /article/xxx, /post/xxx）
+4. 优先返回网站的根URL或主要分类页
+5. 格式：每行一个结果，格式为 "原文章URL -> 列表URL"
+6. 如果无法确定，返回 "原文章URL -> NONE"
+7. 列表页示例：
+   - https://example.com/ (网站首页)
+   - https://example.com/blog (博客列表)
+   - https://example.com/category/tech (技术分类)
+   - https://example.com/tag/ai (AI标签页)
+8. 非列表页示例（不要返回这些）：
+   - https://example.com/article/123 (文章详情)
+   - https://example.com/2026/03/02/post-name (日期路径)
+   - https://example.com/blog/post-name (博客详情页)"""
+
     result = call_minimax("", system_prompt, api_key)
+    
+    article_url_bases = {}
+    for url in article_urls:
+        if '?' in url:
+            base = url.split('?')[0]
+            article_url_bases[base] = url
+            article_url_bases[url] = url
+        else:
+            article_url_bases[url] = url
     
     list_urls = {}
     for line in result.strip().split("\n"):
-        if "->" in line:
-            parts = line.split("->", 1)
-            if len(parts) == 2:
-                original_url = parts[0].strip()
-                list_url = parts[1].strip()
-                if list_url and list_url.upper() != "NONE":
-                    list_urls[original_url] = list_url
+        line = line.strip()
+        if not line:
+            continue
+        
+        if "->" not in line:
+            continue
+        
+        line = line.lstrip('0123456789. ')
+        
+        if "->" not in line:
+            continue
+        
+        parts = line.split("->", 1)
+        if len(parts) == 2:
+            original_url = parts[0].strip()
+            list_url = parts[1].strip()
+            
+            if not list_url or list_url.upper() == "NONE":
+                continue
+            
+            matched_article = article_url_bases.get(original_url)
+            
+            if not matched_article:
+                for base, full in article_url_bases.items():
+                    if original_url.startswith(base) or base.startswith(original_url.rstrip('/')):
+                        matched_article = full
+                        break
+            
+            if matched_article:
+                list_urls[matched_article] = list_url
     
     return list_urls
 
@@ -151,7 +215,156 @@ def find_list_url(article_url: str, api_key: str) -> str:
     
     return None
 
+def load_failed_urls(file_path: Path) -> set:
+    if not file_path.exists():
+        return set()
+    
+    urls = set()
+    with open(file_path) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                urls.add(line)
+    return urls
+
+def save_failed_urls(urls: set, file_path: Path):
+    with open(file_path, "w") as f:
+        for url in sorted(urls):
+            f.write(url + "\n")
+
 def load_existing_urls(output_file: Path) -> set:
+    if not output_file.exists():
+        return set()
+    
+    urls = set()
+    with open(output_file) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                urls.add(line)
+    return urls
+
+def save_urls(new_urls: list, output_file: Path, existing_urls: set):
+    added = 0
+    with open(output_file, "a") as f:
+        for url in new_urls:
+            if url not in existing_urls:
+                f.write(url + "\n")
+                existing_urls.add(url)
+                added += 1
+                print(f"[+] Added: {url}")
+            else:
+                print(f"[-] Skipped (duplicate): {url}")
+    
+    return added
+
+def check_url_accessible(url: str, timeout: int = 10) -> tuple:
+    try:
+        r = requests.head(url, allow_redirects=True, timeout=timeout)
+        if r.status_code == 200:
+            return True, None
+        elif r.status_code == 405:
+            r = requests.get(url, allow_redirects=True, timeout=timeout)
+            if r.status_code == 200:
+                return True, None
+            return False, f"HTTP {r.status_code}"
+        else:
+            return False, f"HTTP {r.status_code}"
+    except requests.exceptions.Timeout:
+        return False, "Timeout"
+    except requests.exceptions.RequestException as e:
+        return False, str(e)
+
+def check_is_list_page(url: str, api_key: str) -> tuple:
+    system_prompt = f"""你是一个网页分析助手。判断给定的URL是否是文章列表/分类页。
+    
+URL: {url}
+
+要求：
+1. 分析这个页面是什么类型的页面
+2. 文章列表页特征：包含多篇文章的列表、分类页、标签页、博客首页、新闻频道首页等
+3. 非列表页：单篇文章详情页、项目主页、文档页面、个人简介页等
+4. 返回格式：
+   - 如果是列表页，返回 "YES"
+   - 如果不是列表页，返回 "NO:原因"
+5. 不要添加任何解释"""
+
+    result = call_minimax("", system_prompt, api_key)
+    result = result.strip().upper()
+    
+    if result.startswith("YES"):
+        return True, None
+    elif result.startswith("NO:"):
+        reason = result[3:].strip()
+        return False, reason
+    else:
+        return False, "Unknown"
+
+def check_is_list_page_batch(urls: list, api_key: str) -> dict:
+    if not urls:
+        return {}
+    
+    urls_text = "\n".join([f"{i+1}. {url}" for i, url in enumerate(urls)])
+    
+    system_prompt = f"""你是一个网页分析助手。批量判断多个URL是否是文章列表/分类页。
+
+URL列表：
+{urls_text}
+
+要求：
+1. 对每个URL，判断其页面是什么类型
+2. 文章列表页特征：包含多篇文章的列表、分类页、标签页、博客首页、新闻频道首页等
+3. 非列表页：单篇文章详情页、项目主页、文档页面、个人简介页、单篇论文页面等
+4. 返回格式：每行一个结果，格式为 "原URL -> YES" 或 "原URL -> NO:原因"
+5. 不要添加任何解释"""
+
+    result = call_minimax("", system_prompt, api_key)
+    
+    url_base_map = {}
+    for url in urls:
+        if '?' in url:
+            base = url.split('?')[0]
+            url_base_map[base] = url
+            url_base_map[url] = url
+        else:
+            url_base_map[url] = url
+    
+    url_results = {}
+    for line in result.strip().split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        
+        if "->" not in line:
+            continue
+        
+        line = line.lstrip('0123456789. ')
+        
+        if "->" not in line:
+            continue
+        
+        parts = line.split("->", 1)
+        if len(parts) == 2:
+            url = parts[0].strip()
+            status = parts[1].strip().upper()
+            
+            matched = url_base_map.get(url)
+            if not matched:
+                for base, full in url_base_map.items():
+                    if url.startswith(base) or base.startswith(url.rstrip('/')):
+                        matched = full
+                        break
+            
+            if matched:
+                if status.startswith("YES"):
+                    url_results[matched] = (True, None)
+                elif status.startswith("NO:"):
+                    reason = status[3:].strip()
+                    url_results[matched] = (False, reason)
+                else:
+                    url_results[matched] = (False, "Unknown")
+    
+    return url_results
     if not output_file.exists():
         return set()
     
@@ -192,10 +405,14 @@ def process_email_file(email_file: Path, api_key: str) -> list:
     
     if articles:
         print(f"[+] Found {len(articles)} articles")
+        resolved_urls = []
         for i, (title, url) in enumerate(articles, 1):
             print(f"    {i}. {title}")
-            print(f"       {url}")
-        return [url for _, url in articles]
+            print(f"       Original: {url}")
+            resolved = resolve_redirect_url(url)
+            print(f"       Resolved: {resolved}")
+            resolved_urls.append(resolved)
+        return resolved_urls
     
     print("[-] No articles found in email, falling back to AI extraction...")
     return None
@@ -224,9 +441,11 @@ def main():
         print("Error: API key not configured. Run: python scripts/track.py --config")
         sys.exit(1)
     
-    text = args.text
+    start_time = time.time()
     fallback_ai_extract = False
+    article_urls = None
     
+    print("[*] Step 1: Extracting and resolving article links from email...")
     if args.mail:
         article_urls = process_email_file(Path(args.mail), api_key)
         if article_urls is None:
@@ -234,7 +453,6 @@ def main():
     elif args.file:
         with open(args.file) as f:
             content = f.read()
-        # Check if it's an email JSON file
         if content.strip().startswith('{') and '"body"' in content:
             try:
                 email_data = json.loads(content)
@@ -251,7 +469,7 @@ def main():
         text = sys.stdin.read()
         fallback_ai_extract = True
     else:
-        text = args.text
+        text = args.text if args.text else ""
         fallback_ai_extract = True
     
     if fallback_ai_extract and not article_urls:
@@ -259,22 +477,22 @@ def main():
             print("Error: No text provided. Use --text, --file, --mail, or --stdin")
             sys.exit(1)
         
-        print("[*] Step 1: Extracting article URLs from mail...")
         article_urls = extract_article_urls(text, api_key)
-        print(f"[+] Found {len(article_urls)} article URLs")
+    
+    step1_time = time.time() - start_time
+    print(f"[✓] Step 1 completed in {step1_time:.2f}s - Found {len(article_urls) if article_urls else 0} article URLs")
     
     if not article_urls:
         print("[-] No article URLs found")
         sys.exit(0)
     
-    output_file = Path(args.output) if args.output else OUTPUT_FILE
-    
     for url in article_urls:
-        print(f"    - {url}")
+        print(f"    - {url[:80]}...")
     
-    print("\n[*] Step 2: Finding list URLs for each article (batch mode)...")
-    print(f"    Processing {len(article_urls)} URLs in a single API call...")
+    print(f"\n[*] Step 2: Finding list URLs for each article (batch mode)...")
+    step2_start = time.time()
     list_url_map = find_list_urls_batch(article_urls, api_key)
+    step2_time = time.time() - step2_start
     
     list_urls = []
     for article_url in article_urls:
@@ -285,15 +503,89 @@ def main():
         else:
             print(f"    {article_url[:50]}... -> No list URL found")
     
+    print(f"[✓] Step 2 completed in {step2_time:.2f}s - Found {len(list_urls)} list URLs")
+    
     if not list_urls:
         print("[-] No list URLs found")
         sys.exit(0)
     
-    print(f"\n[*] Step 3: Saving to {output_file} (with deduplication)...")
-    existing_urls = load_existing_urls(output_file)
-    added = save_urls(list_urls, output_file, existing_urls)
+    print(f"\n[*] Step 3: Validating URLs...")
+    step3_start = time.time()
+    failed_urls = load_failed_urls(FAILED_URLS_FILE)
+    print(f"    Loaded {len(failed_urls)} failed URLs from previous runs")
     
-    print(f"\n[✓] Done! Added {added} new list URLs, skipped {len(list_urls) - added} duplicates")
+    urls_to_validate = [url for url in list_urls if url not in failed_urls]
+    print(f"    {len(urls_to_validate)} URLs to validate (skipping {len(list_urls) - len(urls_to_validate)} previously failed)")
+    
+    if not urls_to_validate:
+        print("[-] No URLs to validate")
+        sys.exit(0)
+    
+    print(f"    [*] Checking URL accessibility...")
+    accessible_urls = []
+    failed_this_run = set()
+    
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    
+    def check_single_url(url):
+        accessible, error = check_url_accessible(url)
+        return url, accessible, error
+    
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(check_single_url, url): url for url in urls_to_validate}
+        for future in as_completed(futures):
+            url, accessible, error = future.result()
+            if accessible:
+                accessible_urls.append(url)
+            else:
+                print(f"        [-] Not accessible: {url} ({error})")
+                failed_this_run.add(url)
+    
+    print(f"    [*] {len(accessible_urls)} URLs accessible, checking if list pages (batch)...")
+    
+    if not accessible_urls:
+        print("[-] No accessible URLs")
+    else:
+        list_check_results = check_is_list_page_batch(accessible_urls, api_key)
+        
+        validated_urls = []
+        for url in accessible_urls:
+            is_list, reason = list_check_results.get(url, (False, "No response"))
+            if is_list:
+                print(f"        [+] Validated: {url}")
+                validated_urls.append(url)
+            else:
+                print(f"        [-] Not a list page: {url} ({reason})")
+                failed_this_run.add(url)
+    
+    if failed_this_run:
+        failed_urls.update(failed_this_run)
+        save_failed_urls(failed_urls, FAILED_URLS_FILE)
+        print(f"    [*] Updated failed URLs file ({len(failed_urls)} total)")
+    
+    step3_time = time.time() - step3_start
+    print(f"[✓] Step 3 completed in {step3_time:.2f}s - {len(validated_urls) if 'validated_urls' in dir() else 0} validated, {len(failed_this_run)} failed")
+    
+    if not validated_urls:
+        print("[-] No valid list URLs found after validation")
+        sys.exit(0)
+    
+    print(f"\n[*] Step 4: Saving validated URLs...")
+    step4_start = time.time()
+    output_file = Path(args.output) if args.output else OUTPUT_FILE
+    existing_urls = load_existing_urls(output_file)
+    added = save_urls(validated_urls, output_file, existing_urls)
+    step4_time = time.time() - step4_start
+    
+    total_time = step1_time + step2_time + step3_time + step4_time
+    print(f"[✓] Step 4 completed in {step4_time:.2f}s")
+    print(f"\n{'='*50}")
+    print(f"[✓] Total time: {total_time:.2f}s")
+    print(f"    - Step 1 (Extract): {step1_time:.2f}s")
+    print(f"    - Step 2 (Find lists): {step2_time:.2f}s")
+    print(f"    - Step 3 (Validate): {step3_time:.2f}s")
+    print(f"    - Step 4 (Save): {step4_time:.2f}s")
+    print(f"[/=] Added {added} new list URLs, skipped {len(validated_urls) - added} duplicates, {len(failed_this_run)} failed")
 
 if __name__ == "__main__":
     main()
